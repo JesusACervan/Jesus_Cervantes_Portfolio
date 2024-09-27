@@ -1,0 +1,142 @@
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+cctrans = pd.read_parquet('/Users/jcervan/Desktop/DS4A Fall - Data Challenges/Finance/Datasets/credit_card_transaction_data_de.parquet', engine='pyarrow')
+ccuser = pd.read_parquet('/Users/jcervan/Desktop/DS4A Fall - Data Challenges/Finance/Datasets/credit_card_users_de.parquet', engine='pyarrow')
+cards = pd.read_parquet('/Users/jcervan/Desktop/DS4A Fall - Data Challenges/Finance/Datasets/sd254_cards_de.parquet', engine='pyarrow')
+
+cctrans.head()
+cards.head()
+ccuser.head()
+cards.dtypes
+
+## Transforming the data provided for all imported files
+cctrans['Amount'] = cctrans['Amount'].str.strip('$').astype(float)
+cctrans['Is Fraud?'] = cctrans['Is Fraud?'].replace('No',0).replace('Yes',1)
+cctrans["Hour"] = cctrans["Time"].str [0:2]
+cctrans["Minute"] = cctrans["Time"].str [3:5]
+cctrans = cctrans.drop(['Time'],axis=1)
+
+ccuser['User Id'] = ccuser.index
+ccuser['Per Capita Income - Zipcode'] = ccuser['Per Capita Income - Zipcode'].str.strip('$').astype(float)
+ccuser['Yearly Income - Person'] = ccuser['Yearly Income - Person'].str.strip('$').astype(float)
+ccuser['Total Debt'] = ccuser['Total Debt'].str.strip('$').astype(float)
+
+cards['Credit Limit'] = cards['Credit Limit'].str.strip('$').astype(float)
+cards['Card'] = cards['CARD INDEX']
+
+## Merging the files based on columns
+finance3 = pd.merge(cctrans, cards, on=['User','Card'], how='left')
+finance = pd.merge(finance3, ccuser, left_on='User', right_on='User Id', how='left')
+
+## Dropping duplicates and determining which components of the data have a lot of null values.
+print(finance.isnull().sum())
+finance.drop_duplicates()
+
+## Selecting only fraud data to explore which factors have high fraud counts
+fraud_data = finance[finance['Is Fraud?']==1]
+
+## Separating fraud data based on data types
+numFraudData = fraud_data.select_dtypes('number')
+objFraudData = fraud_data.select_dtypes('object')
+
+numFraudData.hist(bins=30,figsize=(30,30))
+
+plt.figure(figsize=(5, 5))  
+sns.countplot(data=objFraudData, y='Merchant State', order=objFraudData['Merchant State'].value_counts().head(15).index)
+plt.title('Number of Fraudulent Transactions by Top 15 State')
+plt.show()
+
+plt.figure(figsize=(5, 5))
+top_cities = objFraudData['Merchant City'].value_counts().head(15).index
+sns.countplot(data=objFraudData, y='Merchant City', order=top_cities)
+plt.title('Number of Fraudulent Transactions by Top 15 Cities')
+plt.show()
+
+plt.figure(figsize=(5, 5))
+sns.countplot(data=objFraudData, x='Hour', order=sorted(fraud_data['Hour'].unique()))
+plt.title('Number of Fraudulent Transactions by Hour')
+plt.show()
+
+plt.figure(figsize=(5, 5))
+sns.countplot(data=objFraudData, x='Has Chip')
+plt.title('Number of Fraudulent Transactions by Has Chip')
+plt.show()
+
+plt.figure(figsize=(5, 5))
+sns.countplot(data=objFraudData, x='Use Chip')
+plt.title('Number of Fraudulent Transactions by Use Chip')
+plt.show()
+
+plt.figure(figsize=(5, 5))
+sns.countplot(data=objFraudData, x='Card Brand')
+plt.title('Number of Fraudulent Transactions by Card Brand')
+plt.show()
+
+plt.figure(figsize=(5, 5))
+sns.countplot(data=objFraudData, x='Card Type')
+plt.title('Number of Fraudulent Transactions by Card Type')
+plt.show()
+
+plt.figure(figsize=(5, 5))
+sns.countplot(data=objFraudData, x='Gender')
+plt.title('Number of Fraudulent Transactions by Gender')
+plt.show()
+
+## Selecting the columns that I want to feed into my model
+select = ['Hour', 'Amount', 'Use Chip', 'Merchant Name', 'MCC', 'Card Brand','Card Type', 'Is Fraud?']
+finance = finance[select]
+
+## Transforming the columns into data that can be interpreted by the model
+finance['Use Chip'] = finance['Use Chip'].replace('Chip Transaction',0).replace('Online Transaction',1).replace('Swipe Transaction',2).astype(int)
+finance['Card Brand'] = finance['Card Brand'].replace('Visa',0).replace('Mastercard',1).replace('Discover',2).replace('Amex',3).astype(int)
+finance['Card Type'] = finance['Card Type'].replace('Debit',0).replace('Credit',1).replace('Debit (Prepaid)',2).astype(int)
+finance['Hour'] = finance['Hour'].astype(int)
+
+import numpy as np
+import sklearn
+from sklearn.preprocessing import StandardScaler
+from imblearn.under_sampling import RandomUnderSampler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+
+X = finance.drop('Is Fraud?', axis=1)
+y = finance['Is Fraud?']
+
+## Scaling the amount column since it has a big range of values
+sc = StandardScaler()
+X['Amount'] = sc.fit_transform(X[['Amount']])
+
+desired_proportion = 0.2
+fraud_samples = 8412 # Number of fraudulent data
+total_samples = int(fraud_samples/desired_proportion)
+
+## Create RandomUnderSampler with the desired sampling strategy
+rus = RandomUnderSampler(sampling_strategy={0: total_samples - fraud_samples, 1: fraud_samples}, random_state=1613)
+
+## Apply random undersampling to the original dataset
+X_resampled, y_resampled = rus.fit_resample(X, y)
+
+## Split the resampled data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.3, random_state=1613)
+
+## Logistic Regression Model as our base case to determine how it categorizes fraudulent and non-fraudulent transactions
+from sklearn.linear_model import LogisticRegression
+
+model = LogisticRegression()
+model.fit(X_train,y_train)
+
+y_pred = model.predict(X_test)
+
+print(classification_report(y_test,y_pred))
+
+## RandomForestClassifier Model to compare to our base case and determine how it categorizes fraudulent and non-fraudulent transactions
+from sklearn.ensemble import RandomForestClassifier
+
+model = RandomForestClassifier(n_jobs=-1)
+model.fit(X_train,y_train)
+
+y_pred = model.predict(X_test)
+
+print(classification_report(y_test,y_pred))
